@@ -2,123 +2,101 @@ import express from 'express';
 import * as cheerio from 'cheerio';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
-const counterCache = {};
-const fetchTimes = {};
-const CACHE_TTL = 1000 * 60 * 60 * 6;
+// Riot verification
+const RIOT_CODE = '38b07e36-978c-495f-a36b-e16e6a656b29';
 
-const SLUG_MAP = {
-  "Aurelion Sol": "aurelion-sol",
-  "Bel'Veth": "bel-veth",
-  "Cho'Gath": "cho-gath",
-  "Dr. Mundo": "dr-mundo",
-  "Jarvan IV": "jarvan-iv",
-  "Kai'Sa": "kai-sa",
-  "Kha'Zix": "kha-zix",
-  "Kog'Maw": "kog-maw",
-  "K'Sante": "k-sante",
-  "LeBlanc": "leblanc",
-  "Lee Sin": "lee-sin",
-  "Master Yi": "master-yi",
-  "Miss Fortune": "miss-fortune",
-  "Nunu & Willump": "nunu-willump",
-  "Rek'Sai": "rek-sai",
-  "Renata Glasc": "renata-glasc",
-  "Tahm Kench": "tahm-kench",
-  "Twisted Fate": "twisted-fate",
-  "Vel'Koz": "vel-koz",
-  "Wukong": "wukong",
-  "Xin Zhao": "xin-zhao",
-  "Mel": "mel",
-  "Yunara": "yunara",
-  "Ambessa": "ambessa",
-};
-
-function getSlug(name) {
-  if (SLUG_MAP[name]) return SLUG_MAP[name];
-  return name.toLowerCase().replace(/[' .]/g, '-').replace(/--+/g, '-');
-}
-
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,*/*',
-  'Accept-Language': 'en-US,en;q=0.9',
-};
-
-async function fetchCounters(champName) {
-  const slug = getSlug(champName);
-  const url = `https://u.gg/lol/champions/${slug}/counter`;
-  try {
-    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return [];
-    const html = await res.text();
-    const $ = cheerio.load(html);
-    const counters = [];
-    $('a[href*="/lol/champions/"]').each((i, el) => {
-      const href = $(el).attr('href') || '';
-      const text = $(el).text().trim();
-      if (href.includes('/counter') && text && text.length > 1 && !text.includes('Counter')) {
-        if (!counters.includes(text) && counters.length < 5) counters.push(text);
-      }
-    });
-    return counters;
-  } catch (e) {
-    console.error(`Failed to fetch counters for ${champName}:`, e.message);
-    return [];
-  }
-}
-
-async function getCounters(champName) {
-  const now = Date.now();
-  if (counterCache[champName] && now - fetchTimes[champName] < CACHE_TTL) {
-    return counterCache[champName];
-  }
-  const counters = await fetchCounters(champName);
-  counterCache[champName] = counters;
-  fetchTimes[champName] = now;
-  return counters;
-}
-
-// Riot Games verification
 app.get('/riot.txt', (req, res) => {
   res.type('text/plain');
-  res.send('38b07e36-978c-495f-a36b-e16e6a656b29');
+  res.send(RIOT_CODE);
 });
 
-// Health check
+// Landing page for Riot reviewers
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', cachedChampions: Object.keys(counterCache).length });
+  res.type('text/html');
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>League Picker</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#010A13;color:#F0E6C0;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px}
+    .logo{font-size:48px;margin-bottom:16px}
+    h1{font-size:32px;font-weight:700;color:#C89B3C;margin-bottom:8px}
+    .tagline{font-size:16px;color:#A09070;margin-bottom:40px;text-align:center}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;max-width:860px;width:100%}
+    .card{background:rgba(255,255,255,0.05);border:1px solid rgba(200,155,60,0.2);border-radius:10px;padding:20px}
+    .card-icon{font-size:28px;margin-bottom:10px}
+    .card h3{font-size:14px;font-weight:700;color:#C89B3C;margin-bottom:6px}
+    .card p{font-size:12px;color:#A09070;line-height:1.5}
+    .api-section{margin-top:40px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:24px;max-width:860px;width:100%}
+    .api-section h2{font-size:16px;font-weight:700;color:#C89B3C;margin-bottom:12px}
+    .endpoint{font-family:monospace;font-size:12px;color:#0BC4FF;background:rgba(11,196,255,0.08);padding:6px 10px;border-radius:4px;margin-bottom:6px}
+    .badge{display:inline-block;background:rgba(200,155,60,0.15);border:1px solid rgba(200,155,60,0.3);color:#C89B3C;font-size:11px;padding:2px 8px;border-radius:12px;margin-top:20px}
+    footer{margin-top:40px;font-size:11px;color:#5C5043}
+  </style>
+</head>
+<body>
+  <div class="logo">⚔</div>
+  <h1>League Picker</h1>
+  <p class="tagline">A Windows desktop companion app for League of Legends champion select</p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <h3>Champion Select Helper</h3>
+      <p>Players pre-configure their preferred pick and ban choices. The app automatically locks in their pre-selected champion when their turn arrives in champion select.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📊</div>
+      <h3>Personal Match Analytics</h3>
+      <p>Uses the Riot API to pull the player's own match history and calculate win rates against specific champions, generating personalized ban suggestions based on their actual performance data.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">💾</div>
+      <h3>Pick/Ban Profiles</h3>
+      <p>Save multiple champion select configurations for different roles or game modes and switch between them instantly.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔒</div>
+      <h3>Privacy First</h3>
+      <p>All personal data is stored in the user's own Firebase account. The app only reads LCU data for the current user's client — no data is collected or shared.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚙️</div>
+      <h3>Built with Tauri</h3>
+      <p>Native Windows desktop app built with Rust + React. Uses the official League Client Update (LCU) API to interact with the game client safely and within Riot's guidelines.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📋</div>
+      <h3>Riot API Usage</h3>
+      <p>Uses MATCH-V5 to retrieve match history, SUMMONER-V4 for account lookup. All requests are rate-limited and cached. No real-time in-game data is read.</p>
+    </div>
+  </div>
+
+  <div class="api-section">
+    <h2>API Endpoints Used</h2>
+    <div class="endpoint">GET /lol/match/v5/matches/by-puuid/{puuid}/ids</div>
+    <div class="endpoint">GET /lol/match/v5/matches/{matchId}</div>
+    <div class="endpoint">GET /lol/summoner/v4/summoners/by-name/{summonerName}</div>
+    <div class="endpoint">GET /lol/league/v4/entries/by-summoner/{encryptedSummonerId}</div>
+    <p style="font-size:12px;color:#5C5043;margin-top:12px">Match data is fetched once on app startup and cached locally. No polling or real-time requests are made during gameplay.</p>
+  </div>
+
+  <span class="badge">Riot API Applicant — Personal Use + Public Release</span>
+  <footer>League Picker is not affiliated with or endorsed by Riot Games. League of Legends is a trademark of Riot Games, Inc.</footer>
+</body>
+</html>`);
 });
 
-// Get counters for a specific champion
-app.get('/counters/:champion', async (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  const champ = decodeURIComponent(req.params.champion);
-  const counters = await getCounters(champ);
-  res.json({ champion: champ, counters });
-});
-
-// Get counters for multiple champions at once
-app.get('/counters', async (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  const picks = (req.query.picks || '').split(',').filter(Boolean).map(decodeURIComponent);
-  if (!picks.length) return res.json({ suggestions: [] });
-  const existingBans = (req.query.bans || '').split(',').filter(Boolean).map(decodeURIComponent);
-  const seen = new Set([...picks, ...existingBans]);
-  const suggestions = [];
-  for (const pick of picks) {
-    const counters = await getCounters(pick);
-    for (const c of counters) {
-      if (!seen.has(c) && suggestions.length < 5) {
-        seen.add(c);
-        suggestions.push({ name: c, counters: pick });
-      }
-    }
-  }
-  res.json({ suggestions });
+// Health / status
+app.get('/status', (req, res) => {
+  res.json({ status: 'ok', version: '1.0.0' });
 });
 
 app.listen(PORT, () => {
-  console.log(`League Picker backend running on port ${PORT}`);
+  console.log(`League Picker API server running on port ${PORT}`);
 });
