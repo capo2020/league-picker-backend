@@ -78,17 +78,21 @@ async function fetchCounters(champName) {
 
 async function getCounters(champName) {
   const now = Date.now();
-  // Return cache if fresh
   if (counterCache[champName] && now - fetchTimes[champName] < CACHE_TTL) {
     return counterCache[champName];
   }
-  // Fetch fresh
   const counters = await fetchCounters(champName);
   counterCache[champName] = counters;
   fetchTimes[champName] = now;
   console.log(`Fetched ${champName}: ${counters.join(', ') || 'none'}`);
   return counters;
 }
+
+// ── Riot verification ─────────────────────────────────────────
+app.get('/riot.txt', (req, res) => {
+  res.type('text/plain');
+  res.send('6a6f0ad0-dee3-4407-90fb-3f38b3560d3d');
+});
 
 // Health check
 app.get('/', (req, res) => {
