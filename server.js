@@ -4,10 +4,9 @@ import * as cheerio from 'cheerio';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Cache per champion - only fetched on demand
 const counterCache = {};
 const fetchTimes = {};
-const CACHE_TTL = 1000 * 60 * 60 * 6; // 6 hours
+const CACHE_TTL = 1000 * 60 * 60 * 6;
 
 const SLUG_MAP = {
   "Aurelion Sol": "aurelion-sol",
@@ -50,25 +49,19 @@ const HEADERS = {
 async function fetchCounters(champName) {
   const slug = getSlug(champName);
   const url = `https://u.gg/lol/champions/${slug}/counter`;
-
   try {
     const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
-
     const html = await res.text();
     const $ = cheerio.load(html);
     const counters = [];
-
     $('a[href*="/lol/champions/"]').each((i, el) => {
       const href = $(el).attr('href') || '';
       const text = $(el).text().trim();
       if (href.includes('/counter') && text && text.length > 1 && !text.includes('Counter')) {
-        if (!counters.includes(text) && counters.length < 5) {
-          counters.push(text);
-        }
+        if (!counters.includes(text) && counters.length < 5) counters.push(text);
       }
     });
-
     return counters;
   } catch (e) {
     console.error(`Failed to fetch counters for ${champName}:`, e.message);
@@ -84,22 +77,18 @@ async function getCounters(champName) {
   const counters = await fetchCounters(champName);
   counterCache[champName] = counters;
   fetchTimes[champName] = now;
-  console.log(`Fetched ${champName}: ${counters.join(', ') || 'none'}`);
   return counters;
 }
 
-// ── Riot verification ─────────────────────────────────────────
+// Riot Games verification
 app.get('/riot.txt', (req, res) => {
   res.type('text/plain');
-  res.send('6a6f0ad0-dee3-4407-90fb-3f38b3560d3d');
+  res.send('38b07e36-978c-495f-a36b-e16e6a656b29');
 });
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    cachedChampions: Object.keys(counterCache).length,
-  });
+  res.json({ status: 'ok', cachedChampions: Object.keys(counterCache).length });
 });
 
 // Get counters for a specific champion
@@ -115,11 +104,9 @@ app.get('/counters', async (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   const picks = (req.query.picks || '').split(',').filter(Boolean).map(decodeURIComponent);
   if (!picks.length) return res.json({ suggestions: [] });
-
   const existingBans = (req.query.bans || '').split(',').filter(Boolean).map(decodeURIComponent);
   const seen = new Set([...picks, ...existingBans]);
   const suggestions = [];
-
   for (const pick of picks) {
     const counters = await getCounters(pick);
     for (const c of counters) {
@@ -129,7 +116,6 @@ app.get('/counters', async (req, res) => {
       }
     }
   }
-
   res.json({ suggestions });
 });
 
