@@ -161,4 +161,11 @@ app.get('/', (req, res) => {
 // Health
 app.get('/status', (req, res) => res.json({ status: 'ok', version: '1.0.0' }));
 
+// Keep-alive ping every 14 min so Render free tier doesn't sleep
+setInterval(() => {
+  fetch('https://league-picker-backend.onrender.com/status')
+    .then(() => console.log('Keep-alive ping sent'))
+    .catch(() => {});
+}, 14 * 60 * 1000);
+
 app.listen(PORT, () => console.log(`League Picker API server running on port ${PORT}`));
