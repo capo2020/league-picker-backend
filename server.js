@@ -76,12 +76,47 @@ async function sendVerificationEmail(email, code) {
       to: [email],
       subject: 'Your League Picker verification code',
       html: `
-        <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#102a43">
-          <h2>Verify your League Picker email</h2>
-          <p>Enter this code in League Picker:</p>
-          <div style="font-size:32px;font-weight:700;letter-spacing:8px;padding:18px 0">${code}</div>
-          <p>This code expires in 10 minutes. If you did not create an account, you can ignore this email.</p>
-        </div>
+        <!doctype html>
+        <html lang="en">
+          <body style="margin:0;padding:0;background:#030a13;font-family:Segoe UI,Arial,sans-serif;color:#f0e6c0">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#030a13">
+              <tr>
+                <td align="center" style="padding:36px 16px">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:520px;background:#0d1928;border:1px solid #26384d;border-radius:8px">
+                    <tr>
+                      <td align="center" style="padding:34px 34px 14px">
+                        <div style="display:inline-block;padding:10px 13px;border-radius:8px;background:#c89b3c;color:#07111f;font-size:22px;font-weight:800;line-height:1">LP</div>
+                        <div style="margin-top:14px;color:#c89b3c;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase">League Picker</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" style="padding:8px 34px 0">
+                        <h1 style="margin:0;color:#f0e6c0;font-size:24px;line-height:1.3;font-weight:700">Verify your email</h1>
+                        <p style="margin:12px 0 0;color:#9fb0c5;font-size:14px;line-height:1.6">Enter this code in the League Picker app to finish creating your account.</p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" style="padding:26px 34px">
+                        <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                          <tr>
+                            <td style="padding:18px 24px;background:#07111f;border:1px solid #c89b3c;border-radius:8px;color:#f0e6c0;font-family:Consolas,Menlo,monospace;font-size:32px;font-weight:700;letter-spacing:8px">${code}</td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" style="padding:0 34px 34px">
+                        <p style="margin:0;color:#0bc4ff;font-size:12px;font-weight:600">This code expires in 10 minutes.</p>
+                        <p style="margin:14px 0 0;color:#6f8196;font-size:11px;line-height:1.6">If you did not create a League Picker account, you can safely ignore this email.</p>
+                      </td>
+                    </tr>
+                  </table>
+                  <p style="margin:16px 0 0;color:#52657a;font-size:10px">League Picker account security</p>
+                </td>
+              </tr>
+            </table>
+          </body>
+        </html>
       `,
     }),
   });
