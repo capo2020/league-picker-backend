@@ -60,31 +60,13 @@ function hashVerificationCode(uid, code) {
 }
 
 async function sendVerificationEmail(email, code) {
+  const brevoApiKey = process.env.BREVO_API_KEY;
+  const brevoSenderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER;
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
-  if (!smtpUser || !smtpPass) {
-    throw new Error('SMTP_USER and SMTP_PASS must be configured');
-  }
-
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
-    socketTimeout: 20_000,
-    auth: {
-      user: smtpUser,
-      pass: smtpPass,
-    },
-  });
-
-  await transporter.sendMail({
-    from: `"League Picker" <${smtpUser}>`,
-    to: email,
-    subject: 'Your League Picker verification code',
-    text: `Your League Picker verification code is ${code}. It expires in 10 minutes.`,
-    html: `
+  const subject = 'Your League Picker verification code';
+  const text = `Your League Picker verification code is ${code}. It expires in 10 minutes.`;
+  const html = `
         <!doctype html>
         <html lang="en">
           <body style="margin:0;padding:0;background:#030a13;font-family:Segoe UI,Arial,sans-serif;color:#f0e6c0">
@@ -126,7 +108,54 @@ async function sendVerificationEmail(email, code) {
             </table>
           </body>
         </html>
-      `,
+      `;
+
+  if (brevoApiKey && brevoSenderEmail) {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': brevoApiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: 'League Picker', email: brevoSenderEmail },
+        to: [{ email }],
+        subject,
+        textContent: text,
+        htmlContent: html,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      console.error('Brevo email error:', response.status, details);
+      throw new Error(`Email provider rejected the request (HTTP ${response.status})`);
+    }
+    return;
+  }
+
+  if (!smtpUser || !smtpPass) {
+    throw new Error('BREVO_API_KEY or Gmail SMTP credentials must be configured');
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
+    auth: { user: smtpUser, pass: smtpPass },
+  });
+
+  await transporter.sendMail({
+    from: `"League Picker" <${smtpUser}>`,
+    to: email,
+    subject,
+    text,
+    html,
   });
 }
 
