@@ -1,6 +1,7 @@
 import express from 'express';
 import Stripe from 'stripe';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
@@ -59,23 +60,26 @@ function hashVerificationCode(uid, code) {
 }
 
 async function sendVerificationEmail(email, code) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.EMAIL_FROM;
-  if (!apiKey || !from) {
-    throw new Error('RESEND_API_KEY and EMAIL_FROM must be configured');
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  if (!smtpUser || !smtpPass) {
+    throw new Error('SMTP_USER and SMTP_PASS must be configured');
   }
 
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: smtpUser,
+      pass: smtpPass,
     },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: 'Your League Picker verification code',
-      html: `
+  });
+
+  await transporter.sendMail({
+    from: `"League Picker" <${smtpUser}>`,
+    to: email,
+    subject: 'Your League Picker verification code',
+    text: `Your League Picker verification code is ${code}. It expires in 10 minutes.`,
+    html: `
         <!doctype html>
         <html lang="en">
           <body style="margin:0;padding:0;background:#030a13;font-family:Segoe UI,Arial,sans-serif;color:#f0e6c0">
@@ -118,14 +122,7 @@ async function sendVerificationEmail(email, code) {
           </body>
         </html>
       `,
-    }),
   });
-
-  if (!response.ok) {
-    const details = await response.text();
-    console.error('Resend email error:', response.status, details);
-    throw new Error('Could not send the verification email');
-  }
 }
 
 // Riot verification
