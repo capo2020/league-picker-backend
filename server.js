@@ -52,6 +52,27 @@ async function getVerificationUser(idToken) {
     db.collection('users').doc(decoded.uid).get(),
   ]);
   const profile = profileSnapshot.exists ? profileSnapshot.data() : {};
+  if (!profileSnapshot.exists) {
+    await db.collection('users').doc(decoded.uid).set({
+      email: authUser.email || '',
+      username: authUser.displayName
+        ? authUser.displayName.replace(/[^A-Za-z0-9_]/g, '').slice(0, 20)
+        : '',
+      tier: 'free',
+      is_admin: false,
+      is_banned: false,
+      email_verified: authUser.emailVerified === true,
+      theme: 'dark-gold',
+      sound_enabled: true,
+      auto_accept: false,
+    }, { merge: true });
+    profile.email = authUser.email || '';
+    profile.username = authUser.displayName
+      ? authUser.displayName.replace(/[^A-Za-z0-9_]/g, '').slice(0, 20)
+      : '';
+    profile.tier = 'free';
+    profile.email_verified = authUser.emailVerified === true;
+  }
   const isAdmin = profile?.is_admin === true;
 
   // Existing accounts have no marker and remain verified. New password accounts
@@ -84,6 +105,23 @@ async function getWebsiteUser(req, requireAdmin = false) {
     db.collection('users').doc(decoded.uid).get(),
   ]);
   const profile = profileSnapshot.exists ? profileSnapshot.data() : {};
+  if (!profileSnapshot.exists) {
+    const username = authUser.displayName
+      ? authUser.displayName.replace(/[^A-Za-z0-9_]/g, '').slice(0, 20)
+      : '';
+    Object.assign(profile, {
+      email: authUser.email || '',
+      username,
+      tier: 'free',
+      is_admin: false,
+      is_banned: false,
+      email_verified: authUser.emailVerified === true,
+      theme: 'dark-gold',
+      sound_enabled: true,
+      auto_accept: false,
+    });
+    await db.collection('users').doc(decoded.uid).set(profile, { merge: true });
+  }
   if (profile?.is_banned === true || authUser.disabled) {
     const error = new Error('This account is disabled');
     error.status = 403;
