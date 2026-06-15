@@ -764,6 +764,7 @@ app.patch('/website/admin/config', express.json(), async (req, res) => {
 app.get('/website/admin/support', async (req, res) => {
   try {
     await getWebsiteUser(req, true);
+    res.setHeader('Cache-Control', 'no-store');
     const [supportConfig, supportChats] = await Promise.all([
       db.collection('config').doc('support').get(),
       db.collection('support_chats').orderBy('updated_at', 'desc').limit(100).get(),
@@ -813,15 +814,18 @@ app.patch('/website/admin/support/:chatId', express.json(), async (req, res) => 
 
 app.get('/support/chat/status', async (_req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
     const supportConfig = await db.collection('config').doc('support').get();
     res.json({ online: supportConfig.data()?.online === true });
   } catch {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({ online: false });
   }
 });
 
 app.get('/support/chat/:chatId', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
     const chatId = String(req.params.chatId || '');
     if (!/^[a-f0-9-]{36}$/i.test(chatId)) return res.status(400).json({ error: 'Invalid conversation' });
     const [chat, supportConfig] = await Promise.all([
@@ -831,6 +835,7 @@ app.get('/support/chat/:chatId', async (req, res) => {
     if (!chat.exists) return res.status(404).json({ error: 'Conversation not found' });
     res.json({ chat: publicSupportChat(chat), online: supportConfig.data()?.online === true });
   } catch {
+    res.setHeader('Cache-Control', 'no-store');
     res.status(500).json({ error: 'Could not load the conversation' });
   }
 });
