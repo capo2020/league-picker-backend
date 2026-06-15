@@ -17,9 +17,27 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 8080;
 const verificationCodes = new Map();
+const supportRateLimits = new Map();
+const WEBSITE_ORIGINS = new Set([
+  'https://leaguepicker.com',
+  'https://www.leaguepicker.com',
+  'https://league-picker-website.mathater25.workers.dev',
+]);
 
 const MONTHLY_PRICE_ID = 'price_1TgzXHCz5sLysbuTT5VziDxV';
 const YEARLY_PRICE_ID  = 'price_1TgzYDCz5sLysbuT5jFxBPoF';
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && WEBSITE_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 async function getVerificationUser(idToken) {
   if (!idToken || typeof idToken !== 'string') {
@@ -159,6 +177,57 @@ async function sendVerificationEmail(email, code) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+async function sendSupportEmail({ email, subject, message }) {
+  const brevoApiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER;
+  const supportEmail = process.env.SUPPORT_EMAIL || 'mathater25@gmail.com';
+  if (!brevoApiKey || !senderEmail) {
+    throw new Error('Brevo support email is not configured');
+  }
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': brevoApiKey,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'League Picker Support', email: senderEmail },
+      replyTo: { email },
+      to: [{ email: supportEmail }],
+      subject: `[League Picker Support] ${subject}`,
+      textContent: `From: ${email}\n\n${message}`,
+      htmlContent: `
+        <div style="font-family:Segoe UI,Arial,sans-serif;background:#071624;color:#f5f8fb;padding:28px">
+          <div style="max-width:620px;margin:auto;background:#0d2a40;border:1px solid #31506a;border-radius:8px;padding:26px">
+            <div style="color:#f4b753;font-size:12px;font-weight:700;text-transform:uppercase">League Picker Support</div>
+            <h1 style="font-size:22px;margin:10px 0 20px">${escapeHtml(subject)}</h1>
+            <p style="color:#92a9ba;font-size:13px">From: ${escapeHtml(email)}</p>
+            <div style="white-space:pre-wrap;line-height:1.7;color:#e6eef3">${escapeHtml(message)}</div>
+          </div>
+        </div>
+      `,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    console.error('Brevo support email error:', response.status, details);
+    throw new Error(`Email provider rejected the request (HTTP ${response.status})`);
+  }
+}
+
 // Riot verification
 const RIOT_CODE = '38b07e36-978c-495f-a36b-e16e6a656b29';
 app.get('/riot.txt', (req, res) => {
@@ -229,6 +298,83 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     }
   }
   res.json({ received: true });
+});
+
+app.post('/website/create-checkout', express.json(), async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const decoded = await auth.verifyIdToken(idToken);
+    const [authUser, profileSnapshot] = await Promise.all([
+      auth.getUser(decoded.uid),
+      db.collection('users').doc(decoded.uid).get(),
+    ]);
+    const profile = profileSnapshot.exists ? profileSnapshot.data() : {};
+    const priceId = req.body?.priceId;
+
+    if (![MONTHLY_PRICE_ID, YEARLY_PRICE_ID].includes(priceId)) {
+      return res.status(400).json({ error: 'Invalid price' });
+    }
+    if (!authUser.email) {
+      return res.status(400).json({ error: 'Your account has no email address' });
+    }
+    if (profile?.is_banned === true) {
+      return res.status(403).json({ error: 'This account is disabled' });
+    }
+    if (
+      profile?.is_admin !== true &&
+      authUser.emailVerified !== true &&
+      profile?.email_verified === false
+    ) {
+      return res.status(403).json({ error: 'Verify your email before purchasing Premium' });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      customer_email: authUser.email,
+      metadata: { uid: decoded.uid },
+      success_url: 'https://leaguepicker.com/?checkout=success',
+      cancel_url: 'https://leaguepicker.com/?checkout=cancelled',
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Website checkout error:', error.message);
+    res.status(401).json({ error: 'Sign in again before starting checkout' });
+  }
+});
+
+app.post('/support', express.json({ limit: '16kb' }), async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const subject = String(req.body?.subject || '').trim();
+    const message = String(req.body?.message || '').trim();
+    const website = String(req.body?.website || '').trim();
+    const ip = req.headers['cf-connecting-ip'] || req.ip || 'unknown';
+    const lastSent = supportRateLimits.get(ip) || 0;
+
+    if (website) return res.json({ success: true });
+    if (Date.now() - lastSent < 60_000) {
+      return res.status(429).json({ error: 'Please wait a minute before sending another message' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    if (subject.length < 3 || subject.length > 100) {
+      return res.status(400).json({ error: 'Subject must be between 3 and 100 characters' });
+    }
+    if (message.length < 10 || message.length > 4000) {
+      return res.status(400).json({ error: 'Message must be between 10 and 4000 characters' });
+    }
+
+    await sendSupportEmail({ email, subject, message });
+    supportRateLimits.set(ip, Date.now());
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Support request error:', error.message);
+    res.status(500).json({ error: 'Could not send your message. Please try again.' });
+  }
 });
 
 // ── Email ownership verification ─────────────────────────────────────────────
