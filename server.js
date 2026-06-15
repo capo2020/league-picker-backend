@@ -33,7 +33,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
@@ -66,6 +66,64 @@ async function getVerificationUser(idToken) {
     email: authUser.email,
     isAdmin,
     needsVerification,
+  };
+}
+
+async function getWebsiteUser(req, requireAdmin = false) {
+  const authHeader = req.headers.authorization || '';
+  const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!idToken) {
+    const error = new Error('You must be signed in');
+    error.status = 401;
+    throw error;
+  }
+
+  const decoded = await auth.verifyIdToken(idToken);
+  const [authUser, profileSnapshot] = await Promise.all([
+    auth.getUser(decoded.uid),
+    db.collection('users').doc(decoded.uid).get(),
+  ]);
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : {};
+  if (profile?.is_banned === true || authUser.disabled) {
+    const error = new Error('This account is disabled');
+    error.status = 403;
+    throw error;
+  }
+  if (requireAdmin && profile?.is_admin !== true) {
+    const error = new Error('Administrator access is required');
+    error.status = 403;
+    throw error;
+  }
+  return { uid: decoded.uid, authUser, profile, isAdmin: profile?.is_admin === true };
+}
+
+function publicDevice(doc) {
+  const data = doc.data() || {};
+  return {
+    deviceId: doc.id,
+    deviceName: data.device_name || 'Unknown Windows device',
+    adminLabel: data.admin_label || '',
+    appVersion: data.app_version || '',
+    created: data.created || '',
+    lastSeen: data.last_seen || '',
+    banned: data.banned === true,
+    reason: data.reason || '',
+    uid: data.uid || '',
+    username: data.username || '',
+    email: data.email || '',
+  };
+}
+
+function publicUser(doc) {
+  const data = doc.data() || {};
+  return {
+    uid: doc.id,
+    email: data.email || '',
+    username: data.username || '',
+    tier: data.tier || 'free',
+    isAdmin: data.is_admin === true,
+    isBanned: data.is_banned === true,
+    emailVerified: data.email_verified !== false,
   };
 }
 
@@ -342,6 +400,170 @@ app.post('/website/create-checkout', express.json(), async (req, res) => {
   } catch (error) {
     console.error('Website checkout error:', error.message);
     res.status(401).json({ error: 'Sign in again before starting checkout' });
+  }
+});
+
+app.get('/website/account', async (req, res) => {
+  try {
+    const user = await getWebsiteUser(req);
+    const devicesSnapshot = await db.collection('devices').where('uid', '==', user.uid).get();
+    res.json({
+      account: {
+        uid: user.uid,
+        email: user.authUser.email || user.profile?.email || '',
+        username: user.profile?.username || '',
+        tier: user.isAdmin ? 'admin' : (user.profile?.tier || 'free'),
+        isAdmin: user.isAdmin,
+        emailVerified: user.isAdmin || user.authUser.emailVerified === true || user.profile?.email_verified !== false,
+        createdAt: user.authUser.metadata?.creationTime || '',
+        lastSignIn: user.authUser.metadata?.lastSignInTime || '',
+        settings: {
+          theme: user.profile?.theme || 'dark-gold',
+          soundEnabled: user.profile?.sound_enabled !== false,
+          autoAccept: user.profile?.auto_accept === true,
+          pickChampion: user.profile?.pick_champ || '',
+          banChampion: user.profile?.ban_champ || '',
+          profilesConfigured: Boolean(user.profile?.profiles_json),
+        },
+      },
+      devices: devicesSnapshot.docs.map(publicDevice),
+    });
+  } catch (error) {
+    res.status(error.status || 401).json({ error: error.message || 'Could not load account' });
+  }
+});
+
+app.patch('/website/account', express.json(), async (req, res) => {
+  try {
+    const user = await getWebsiteUser(req);
+    const username = String(req.body?.username || '').trim();
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+      return res.status(400).json({
+        error: 'Username must be 3-20 characters using letters, numbers, or underscores',
+      });
+    }
+    await db.collection('users').doc(user.uid).set({ username }, { merge: true });
+    const devices = await db.collection('devices').where('uid', '==', user.uid).get();
+    await Promise.all(devices.docs.map((doc) => doc.ref.set({ username }, { merge: true })));
+    res.json({ success: true, username });
+  } catch (error) {
+    res.status(error.status || 401).json({ error: error.message || 'Could not update account' });
+  }
+});
+
+app.post('/website/account/revoke-sessions', express.json(), async (req, res) => {
+  try {
+    const user = await getWebsiteUser(req);
+    await auth.revokeRefreshTokens(user.uid);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 401).json({ error: error.message || 'Could not revoke sessions' });
+  }
+});
+
+app.get('/website/admin/dashboard', async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const [users, devices, appConfig, announcement] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('devices').get(),
+      db.collection('config').doc('app').get(),
+      db.collection('config').doc('announcement').get(),
+    ]);
+    res.json({
+      users: users.docs.map(publicUser),
+      devices: devices.docs.map(publicDevice),
+      config: {
+        minVersion: appConfig.data()?.min_version || '0.0.0',
+        announcement: announcement.data()?.message || '',
+      },
+    });
+  } catch (error) {
+    res.status(error.status || 401).json({ error: error.message || 'Could not load admin dashboard' });
+  }
+});
+
+app.patch('/website/admin/users/:uid', express.json(), async (req, res) => {
+  try {
+    const admin = await getWebsiteUser(req, true);
+    const uid = String(req.params.uid || '');
+    if (!uid || uid === admin.uid) {
+      return res.status(400).json({ error: 'You cannot modify your own administrator account here' });
+    }
+    const update = {};
+    if (req.body?.tier !== undefined) {
+      if (!['free', 'premium'].includes(req.body.tier)) {
+        return res.status(400).json({ error: 'Invalid account tier' });
+      }
+      update.tier = req.body.tier;
+    }
+    if (req.body?.banned !== undefined) update.is_banned = req.body.banned === true;
+    if (!Object.keys(update).length) return res.status(400).json({ error: 'No supported changes supplied' });
+    await db.collection('users').doc(uid).set(update, { merge: true });
+    if ('is_banned' in update) {
+      await auth.updateUser(uid, { disabled: update.is_banned });
+      if (update.is_banned) await auth.revokeRefreshTokens(uid);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not update user' });
+  }
+});
+
+app.patch('/website/admin/devices/:deviceId', express.json(), async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const deviceId = String(req.params.deviceId || '');
+    const update = {};
+    if (req.body?.label !== undefined) update.admin_label = String(req.body.label).trim().slice(0, 80);
+    if (req.body?.banned !== undefined) {
+      update.banned = req.body.banned === true;
+      update.reason = String(req.body.reason || '').trim().slice(0, 240);
+    }
+    if (!Object.keys(update).length) return res.status(400).json({ error: 'No supported changes supplied' });
+    await db.collection('devices').doc(deviceId).set(update, { merge: true });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not update device' });
+  }
+});
+
+app.patch('/website/admin/config', express.json(), async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const tasks = [];
+    if (req.body?.announcement !== undefined) {
+      tasks.push(
+        db.collection('config').doc('announcement').set(
+          { message: String(req.body.announcement).trim().slice(0, 1000) },
+          { merge: true },
+        ),
+      );
+    }
+    if (req.body?.minVersion !== undefined) {
+      const minVersion = String(req.body.minVersion).trim();
+      if (!/^\d+\.\d+\.\d+$/.test(minVersion)) {
+        return res.status(400).json({ error: 'Minimum version must look like 1.0.48' });
+      }
+      tasks.push(db.collection('config').doc('app').set({ min_version: minVersion }, { merge: true }));
+    }
+    if (req.body?.riotKey !== undefined) {
+      const riotKey = String(req.body.riotKey).trim();
+      if (!riotKey.startsWith('RGAPI-')) {
+        return res.status(400).json({ error: 'Riot API key must start with RGAPI-' });
+      }
+      tasks.push(
+        db.collection('config').doc('riot_key').set(
+          { key: riotKey, updated_at: Date.now().toString() },
+          { merge: true },
+        ),
+      );
+    }
+    if (!tasks.length) return res.status(400).json({ error: 'No supported changes supplied' });
+    await Promise.all(tasks);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not update configuration' });
   }
 });
 
