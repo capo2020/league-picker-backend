@@ -868,22 +868,24 @@ app.post('/support/chat/message', express.json({ limit: '8kb' }), async (req, re
     const humanRequested = wantsHumanSupport(text) || data.human_requested === true;
     messages.push({ sender: 'user', text, at: Date.now() });
 
-    if (!online) {
-      if (humanRequested) {
-        messages.push({
-          sender: 'bot',
-          text: email
-            ? 'League Picker support is offline, but your message and email have been saved. You will receive a reply by email.'
-            : 'League Picker support is offline. Enter your email below and send one more message so a human can reply.',
-          at: Date.now(),
-        });
-      } else {
-        messages.push({ sender: 'bot', text: supportAssistantReply(text), at: Date.now() });
-      }
+    if (humanRequested) {
+      messages.push({
+        sender: 'bot',
+        text: online
+          ? (email
+              ? 'League Picker support is online. Your message and email have been sent to a human, and you can keep chatting here while you wait.'
+              : 'League Picker support is online. Leave your email and message so a human can follow up directly.')
+          : (email
+              ? 'League Picker support is offline, but your message and email have been saved. You will receive a reply by email.'
+              : 'League Picker support is offline. Enter your email below and send one more message so a human can reply.'),
+        at: Date.now(),
+      });
+    } else {
+      messages.push({ sender: 'bot', text: supportAssistantReply(text), at: Date.now() });
     }
 
     const savedEmail = email || data.email || '';
-    const shouldNotifyByEmail = !online && humanRequested && Boolean(email) && data.email_notified !== true;
+    const shouldNotifyByEmail = humanRequested && Boolean(email) && data.email_notified !== true;
     await ref.set({
       email: savedEmail,
       messages,
