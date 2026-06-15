@@ -425,15 +425,18 @@ app.post('/website/create-checkout', express.json(), async (req, res) => {
       return res.status(403).json({ error: 'Verify your email before purchasing Premium' });
     }
 
-    const session = await stripe.checkout.sessions.create({
+    const checkoutOptions = {
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
-      customer_email: authUser.email,
       metadata: { uid: decoded.uid },
       success_url: 'https://leaguepicker.com/?checkout=success',
       cancel_url: 'https://leaguepicker.com/?checkout=cancelled',
-    });
+    };
+    if (profile?.stripe_customer_id) checkoutOptions.customer = profile.stripe_customer_id;
+    else checkoutOptions.customer_email = authUser.email;
+
+    const session = await stripe.checkout.sessions.create(checkoutOptions);
     res.json({ url: session.url });
   } catch (error) {
     console.error('Website checkout error:', error.message);
@@ -441,10 +444,75 @@ app.post('/website/create-checkout', express.json(), async (req, res) => {
   }
 });
 
+app.post('/website/billing-portal', express.json(), async (req, res) => {
+  try {
+    const user = await getWebsiteUser(req);
+    const customerId = user.profile?.stripe_customer_id;
+    if (!customerId) {
+      return res.status(400).json({ error: 'Purchase Premium before managing payment methods' });
+    }
+    const configurations = await stripe.billingPortal.configurations.list({ active: true, limit: 1 });
+    const configuration = configurations.data[0] || await stripe.billingPortal.configurations.create({
+      business_profile: {
+        headline: 'Manage your League Picker Premium subscription',
+        privacy_policy_url: 'https://leaguepicker.com/privacy.html',
+        terms_of_service_url: 'https://leaguepicker.com/terms.html',
+      },
+      features: {
+        invoice_history: { enabled: true },
+        payment_method_update: { enabled: true },
+        subscription_cancel: { enabled: true, mode: 'at_period_end' },
+      },
+    });
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      configuration: configuration.id,
+      return_url: 'https://leaguepicker.com/',
+    });
+    res.json({ url: portal.url });
+  } catch (error) {
+    console.error('Website billing portal error:', error.message);
+    res.status(error.status || 500).json({ error: error.message || 'Could not open billing settings' });
+  }
+});
+
 app.get('/website/account', async (req, res) => {
   try {
     const user = await getWebsiteUser(req);
-    const devicesSnapshot = await db.collection('devices').where('uid', '==', user.uid).get();
+    const devicesPromise = db.collection('devices').where('uid', '==', user.uid).get();
+    let billing = { hasCustomer: false, paymentMethods: [], subscription: null };
+    if (user.profile?.stripe_customer_id) {
+      try {
+        const [paymentMethods, subscription] = await Promise.all([
+          stripe.paymentMethods.list({
+            customer: user.profile.stripe_customer_id,
+            type: 'card',
+            limit: 5,
+          }),
+          user.profile?.stripe_subscription_id
+            ? stripe.subscriptions.retrieve(user.profile.stripe_subscription_id).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        billing = {
+          hasCustomer: true,
+          paymentMethods: paymentMethods.data.map((method) => ({
+            id: method.id,
+            brand: method.card?.brand || 'card',
+            last4: method.card?.last4 || '',
+            expMonth: method.card?.exp_month || 0,
+            expYear: method.card?.exp_year || 0,
+          })),
+          subscription: subscription ? {
+            status: subscription.status,
+            cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+            currentPeriodEnd: subscription.items?.data?.[0]?.current_period_end || null,
+          } : null,
+        };
+      } catch (error) {
+        console.error('Could not load website billing details:', error.message);
+      }
+    }
+    const devicesSnapshot = await devicesPromise;
     res.json({
       account: {
         uid: user.uid,
@@ -465,6 +533,7 @@ app.get('/website/account', async (req, res) => {
         },
       },
       devices: devicesSnapshot.docs.map(publicDevice),
+      billing,
     });
   } catch (error) {
     res.status(error.status || 401).json({ error: error.message || 'Could not load account' });
