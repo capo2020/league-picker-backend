@@ -788,6 +788,9 @@ app.post('/website/admin/support/:chatId/reply', express.json({ limit: '8kb' }),
     const snapshot = await ref.get();
     if (!snapshot.exists) return res.status(404).json({ error: 'Conversation not found' });
     const data = snapshot.data() || {};
+    if ((data.status || 'open') === 'closed') {
+      return res.status(409).json({ error: 'This conversation is closed' });
+    }
     const messages = Array.isArray(data.messages) ? data.messages.slice(-99) : [];
     messages.push({ sender: 'admin', text, at: Date.now() });
     await ref.set({ messages, status: 'open', updated_at: Date.now() }, { merge: true });
@@ -840,6 +843,25 @@ app.get('/support/chat/:chatId', async (req, res) => {
   }
 });
 
+app.patch('/support/chat/:chatId', express.json(), async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const chatId = String(req.params.chatId || '');
+    if (!/^[a-f0-9-]{36}$/i.test(chatId)) return res.status(400).json({ error: 'Invalid conversation' });
+    const status = req.body?.status;
+    if (status !== 'closed') return res.status(400).json({ error: 'Invalid conversation status' });
+    const ref = db.collection('support_chats').doc(chatId);
+    const snapshot = await ref.get();
+    if (!snapshot.exists) return res.status(404).json({ error: 'Conversation not found' });
+    await ref.set({ status: 'closed', updated_at: Date.now() }, { merge: true });
+    const saved = await ref.get();
+    res.json({ chat: publicSupportChat(saved) });
+  } catch (error) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(500).json({ error: error.message || 'Could not update conversation' });
+  }
+});
+
 app.post('/support/chat/message', express.json({ limit: '8kb' }), async (req, res) => {
   try {
     const ip = req.headers['cf-connecting-ip'] || req.ip || 'unknown';
@@ -863,6 +885,9 @@ app.post('/support/chat/message', express.json({ limit: '8kb' }), async (req, re
       db.collection('config').doc('support').get(),
     ]);
     const data = snapshot.exists ? snapshot.data() || {} : {};
+    if (snapshot.exists && (data.status || 'open') === 'closed') {
+      return res.status(409).json({ error: 'This conversation is closed. Start a new chat to keep going.' });
+    }
     const messages = Array.isArray(data.messages) ? data.messages.slice(-97) : [];
     const online = supportConfig.data()?.online === true;
     const humanRequested = wantsHumanSupport(text) || data.human_requested === true;
