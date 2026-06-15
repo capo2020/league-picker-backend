@@ -18,6 +18,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const verificationCodes = new Map();
 const supportRateLimits = new Map();
+const supportChatRateLimits = new Map();
 const WEBSITE_ORIGINS = new Set([
   'https://leaguepicker.com',
   'https://www.leaguepicker.com',
@@ -324,6 +325,78 @@ async function sendSupportEmail({ email, subject, message }) {
   }
 }
 
+const SUPPORT_KNOWLEDGE = [
+  {
+    terms: ['download', 'install', 'installer'],
+    answer: 'You can download the latest Windows installer directly from leaguepicker.com/download. League Picker currently supports 64-bit Windows 10 and Windows 11.',
+  },
+  {
+    terms: ['update', 'version', 'upgrade'],
+    answer: 'League Picker checks for signed updates from the app. You can use Check for Update, or download the latest installer from leaguepicker.com/download without uninstalling first.',
+  },
+  {
+    terms: ['guest', 'without account', 'no account', 'login'],
+    answer: 'Guest mode includes the basic tools without signing in. An account is required for Premium, synced settings, linked devices, and website account management.',
+  },
+  {
+    terms: ['premium', 'price', 'cost', 'subscription'],
+    answer: 'Premium is $2.99 monthly or $23.99 yearly. It unlocks advanced automation, unlimited role plans, match-history insights, and Premium tools across signed-in devices.',
+  },
+  {
+    terms: ['payment', 'card', 'billing', 'refund', 'cancel'],
+    answer: 'Payments are securely handled by Stripe. League Picker never stores full card details. Signed-in customers can manage cards, invoices, and cancellation from the Premium page.',
+  },
+  {
+    terms: ['pick', 'ban', 'champion select', 'draft'],
+    answer: 'League Picker can save primary and backup picks and bans for champion select. Role-based plans let you keep different choices for Top, Jungle, Mid, Bottom, and Support.',
+  },
+  {
+    terms: ['smart ban', 'history', 'match analysis'],
+    answer: 'Smart-ban analysis uses supported match-history information and saved preferences to suggest useful bans. More match history usually produces stronger recommendations.',
+  },
+  {
+    terms: ['riot', 'profile', 'rank', 'summoner'],
+    answer: 'League Picker can connect to the local League client and display supported Riot profile, ranked, and match information. Never share your Riot password or verification code in support chat.',
+  },
+  {
+    terms: ['device', 'ban', 'computer', 'pc'],
+    answer: 'Signed-in devices appear in your website account with their Windows device name, app version, and last-seen time. Device restrictions are managed by League Picker administrators.',
+  },
+  {
+    terms: ['email', 'verify', 'verification code', 'google'],
+    answer: 'Email accounts use a six-digit verification code. Google sign-in uses your Google account through Firebase. Never send a verification code, password, or recovery code in this chat.',
+  },
+];
+
+function supportAssistantReply(message) {
+  const text = message.toLowerCase();
+  const sensitive = ['password', 'verification code', 'otp', 'api key', 'secret key', 'full card', 'cvv', 'social security', 'real name'];
+  if (sensitive.some((term) => text.includes(term))) {
+    return 'For your safety, do not share passwords, verification codes, API keys, full card numbers, CVV codes, or other private identity information. I can help with general League Picker questions only.';
+  }
+  const match = SUPPORT_KNOWLEDGE
+    .map((entry) => ({ ...entry, score: entry.terms.filter((term) => text.includes(term)).length }))
+    .sort((a, b) => b.score - a.score)[0];
+  if (match?.score > 0) return match.answer;
+  return 'I only answer questions from the League Picker help guide, and I am not confident about that one. Type "talk to a human" and leave your email and message for League Picker support.';
+}
+
+function wantsHumanSupport(message) {
+  return /(human|real person|talk to (you|someone|support)|contact support|owner|admin)/i.test(message);
+}
+
+function publicSupportChat(doc) {
+  const data = doc.data() || {};
+  return {
+    id: doc.id,
+    email: data.email || '',
+    status: data.status || 'open',
+    humanRequested: data.human_requested === true,
+    updatedAt: data.updated_at || 0,
+    messages: Array.isArray(data.messages) ? data.messages.slice(-100) : [],
+  };
+}
+
 // Riot verification
 const RIOT_CODE = '38b07e36-978c-495f-a36b-e16e6a656b29';
 app.get('/riot.txt', (req, res) => {
@@ -571,18 +644,24 @@ app.post('/website/account/revoke-sessions', express.json(), async (req, res) =>
 app.get('/website/admin/dashboard', async (req, res) => {
   try {
     await getWebsiteUser(req, true);
-    const [users, devices, appConfig, announcement] = await Promise.all([
+    const [users, devices, appConfig, announcement, supportConfig, supportChats] = await Promise.all([
       db.collection('users').get(),
       db.collection('devices').get(),
       db.collection('config').doc('app').get(),
       db.collection('config').doc('announcement').get(),
+      db.collection('config').doc('support').get(),
+      db.collection('support_chats').orderBy('updated_at', 'desc').limit(100).get(),
     ]);
     res.json({
       users: users.docs.map(publicUser),
       devices: devices.docs.map(publicDevice),
+      supportChats: supportChats.docs
+        .map(publicSupportChat)
+        .sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)),
       config: {
         minVersion: appConfig.data()?.min_version || '0.0.0',
         announcement: announcement.data()?.message || '',
+        supportOnline: supportConfig.data()?.online === true,
       },
     });
   } catch (error) {
@@ -666,11 +745,164 @@ app.patch('/website/admin/config', express.json(), async (req, res) => {
         ),
       );
     }
+    if (req.body?.supportOnline !== undefined) {
+      tasks.push(
+        db.collection('config').doc('support').set(
+          { online: req.body.supportOnline === true, updated_at: Date.now() },
+          { merge: true },
+        ),
+      );
+    }
     if (!tasks.length) return res.status(400).json({ error: 'No supported changes supplied' });
     await Promise.all(tasks);
     res.json({ success: true });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || 'Could not update configuration' });
+  }
+});
+
+app.get('/website/admin/support', async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const [supportConfig, supportChats] = await Promise.all([
+      db.collection('config').doc('support').get(),
+      db.collection('support_chats').orderBy('updated_at', 'desc').limit(100).get(),
+    ]);
+    res.json({
+      online: supportConfig.data()?.online === true,
+      chats: supportChats.docs.map(publicSupportChat),
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not load support inbox' });
+  }
+});
+
+app.post('/website/admin/support/:chatId/reply', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const chatId = String(req.params.chatId || '');
+    const text = String(req.body?.message || '').trim().slice(0, 2000);
+    if (!chatId || text.length < 1) return res.status(400).json({ error: 'Enter a reply' });
+    const ref = db.collection('support_chats').doc(chatId);
+    const snapshot = await ref.get();
+    if (!snapshot.exists) return res.status(404).json({ error: 'Conversation not found' });
+    const data = snapshot.data() || {};
+    const messages = Array.isArray(data.messages) ? data.messages.slice(-99) : [];
+    messages.push({ sender: 'admin', text, at: Date.now() });
+    await ref.set({ messages, status: 'open', updated_at: Date.now() }, { merge: true });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not send reply' });
+  }
+});
+
+app.patch('/website/admin/support/:chatId', express.json(), async (req, res) => {
+  try {
+    await getWebsiteUser(req, true);
+    const status = req.body?.status;
+    if (!['open', 'closed'].includes(status)) return res.status(400).json({ error: 'Invalid conversation status' });
+    await db.collection('support_chats').doc(String(req.params.chatId || '')).set(
+      { status, updated_at: Date.now() },
+      { merge: true },
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Could not update conversation' });
+  }
+});
+
+app.get('/support/chat/status', async (_req, res) => {
+  try {
+    const supportConfig = await db.collection('config').doc('support').get();
+    res.json({ online: supportConfig.data()?.online === true });
+  } catch {
+    res.json({ online: false });
+  }
+});
+
+app.get('/support/chat/:chatId', async (req, res) => {
+  try {
+    const chatId = String(req.params.chatId || '');
+    if (!/^[a-f0-9-]{36}$/i.test(chatId)) return res.status(400).json({ error: 'Invalid conversation' });
+    const [chat, supportConfig] = await Promise.all([
+      db.collection('support_chats').doc(chatId).get(),
+      db.collection('config').doc('support').get(),
+    ]);
+    if (!chat.exists) return res.status(404).json({ error: 'Conversation not found' });
+    res.json({ chat: publicSupportChat(chat), online: supportConfig.data()?.online === true });
+  } catch {
+    res.status(500).json({ error: 'Could not load the conversation' });
+  }
+});
+
+app.post('/support/chat/message', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    const ip = req.headers['cf-connecting-ip'] || req.ip || 'unknown';
+    const lastMessage = supportChatRateLimits.get(ip) || 0;
+    if (Date.now() - lastMessage < 1_500) {
+      return res.status(429).json({ error: 'Please wait a moment before sending another message' });
+    }
+    const text = String(req.body?.message || '').trim().slice(0, 2000);
+    const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 240);
+    let chatId = String(req.body?.chatId || '');
+    if (!text) return res.status(400).json({ error: 'Enter a message' });
+    if (chatId && !/^[a-f0-9-]{36}$/i.test(chatId)) return res.status(400).json({ error: 'Invalid conversation' });
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    if (!chatId) chatId = crypto.randomUUID();
+
+    const ref = db.collection('support_chats').doc(chatId);
+    const [snapshot, supportConfig] = await Promise.all([
+      ref.get(),
+      db.collection('config').doc('support').get(),
+    ]);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    const messages = Array.isArray(data.messages) ? data.messages.slice(-97) : [];
+    const online = supportConfig.data()?.online === true;
+    const humanRequested = wantsHumanSupport(text) || data.human_requested === true;
+    messages.push({ sender: 'user', text, at: Date.now() });
+
+    if (!online) {
+      if (humanRequested) {
+        messages.push({
+          sender: 'bot',
+          text: email
+            ? 'League Picker support is offline, but your message and email have been saved. You will receive a reply by email.'
+            : 'League Picker support is offline. Enter your email below and send one more message so a human can reply.',
+          at: Date.now(),
+        });
+      } else {
+        messages.push({ sender: 'bot', text: supportAssistantReply(text), at: Date.now() });
+      }
+    }
+
+    const savedEmail = email || data.email || '';
+    const shouldNotifyByEmail = !online && humanRequested && Boolean(email) && data.email_notified !== true;
+    await ref.set({
+      email: savedEmail,
+      messages,
+      status: data.status || 'open',
+      human_requested: humanRequested,
+      email_notified: data.email_notified === true || shouldNotifyByEmail,
+      created_at: data.created_at || Date.now(),
+      updated_at: Date.now(),
+    }, { merge: true });
+    supportChatRateLimits.set(ip, Date.now());
+
+    if (shouldNotifyByEmail) {
+      await sendSupportEmail({
+        email,
+        subject: 'Offline chat message',
+        message: `Conversation: ${chatId}\n\n${text}`,
+      }).catch((error) => console.error('Offline chat email error:', error.message));
+    }
+
+    const saved = await ref.get();
+    res.json({ chat: publicSupportChat(saved), online });
+  } catch (error) {
+    console.error('Support chat error:', error.message);
+    res.status(500).json({ error: 'Could not send the chat message' });
   }
 });
 
